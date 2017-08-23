@@ -1,1 +1,4 @@
-exportPattern("^[[:alpha:]]+")
+importFrom("matrixStats","rowSds")
+importFrom("stats","uniroot")
+
+export(CpGFilterICC)

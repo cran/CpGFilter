@@ -1,6 +1,13 @@
+B2M <-
+		function(x) {
+	x[x==0] <- min(x[x!=0])
+	x[x==1] <- max(x[x!=1])
+	log(x / (1-x))
+}
 
-CpGFilterICC <-
-function(dat, rep.design, logit.transform=TRUE, verbose=TRUE) {
+
+
+CpGFilterICC <- function(dat, rep.design, REML = FALSE, logit.transform = TRUE, verbose = TRUE) {
 	# Computes the ICC for each probe based on fast LMM
 	#
 	# Args:
@@ -12,11 +19,11 @@ function(dat, rep.design, logit.transform=TRUE, verbose=TRUE) {
 	#
 	# Returns:
 	#   The ICCs for all probes
-
+	
 	ptm <- proc.time()
-
+	
 	if (verbose == TRUE) 	cat("Fast LMM for calculating ICC based on replicates\n")
-    if (nrow(dat) < ncol(dat)) {
+	if (nrow(dat) < ncol(dat)) {
 		warning("Less rows than columns. Rows should be CpGs! \n")
 	}
 	if (ncol(dat) != length(rep.design)) {
@@ -34,7 +41,7 @@ function(dat, rep.design, logit.transform=TRUE, verbose=TRUE) {
 		} else {
 			dat <- B2M(dat)
 		}
-    }
+	}
 	rep.design <- as.numeric(factor(rep.design))
 	m <- length(unique(rep.design))
 	n <- length(rep.design)
@@ -54,21 +61,14 @@ function(dat, rep.design, logit.transform=TRUE, verbose=TRUE) {
 	
 	# replicates list
 	rep.id.list <- lapply(1:m, function(i) which(rep.design == i))
-		
+	
 	# Estimate sd and mean using all biological replicates
 	indep.id <- sapply(rep.id.list, function(x) x[1])
-	dat.temp <- t(dat[, indep.id, drop=F])
-	dat.temp <- scale(dat.temp)
-#	cpg.sd <- rowSds(dat[, indep.id, drop=F])
-#	cpg.m <- rowMeans(dat[, indep.id, drop=F])
-	
-    cpg.sd <- attr(dat.temp, 'scaled:scale')
-    cpg.m <- attr(dat.temp, 'scaled:center')
-	
-	gc(dat.temp)
+	cpg.sd <- rowSds(dat[, indep.id, drop = F])
+	cpg.m <- rowMeans(dat[, indep.id, drop = F])
 	
 	# retain samples with replicates
-	dat <- dat[, unlist(rep.id.list[rep.no != 1]), drop=F]
+	dat <- dat[, unlist(rep.id.list[rep.no != 1]), drop = F]
 	rep.design <- rep.design[unlist(rep.id.list[rep.no != 1])]
 	rep.no <- rep.no[rep.no != 1]
 	rep.id.list <- lapply(unique(rep.design), function(i) which(rep.design == i))
@@ -86,38 +86,60 @@ function(dat, rep.design, logit.transform=TRUE, verbose=TRUE) {
 	exp.ind <- rep(1:m2, rep.no^2)
 	
 	temp <- c(0, cumsum(rep.no^2))
-	ind <- unlist(lapply(1:m2, function(i) (1:rep.no[i]-1)*rep.no[i] + 1:rep.no[i] + temp[i]))
+	ind <- unlist(lapply(1:m2, function(i) (1:rep.no[i]-1) * rep.no[i] + 1:rep.no[i] + temp[i]))
 	mask.c0 <- rep(FALSE, length(exp.ind))
 	mask.c0[ind] <- TRUE
 	mask.c1 <- !(mask.c0)
 	
 	# Score function - vectorization to speed up computation
-	f1 <- function(rho, y) {
-		b0 <- (1 + (rep.no-2)*rho) / (1 - rho) / (1 + (rep.no-1)*rho)
-		b1 <- -rho / (1 - rho) / (1 + (rep.no-1)*rho)
+	# MLE 
+	f1.mle <- function(rho, y) {
+		b0 <- (1 + (rep.no-2)*rho) / (1 - rho) / (1 + (rep.no-1) * rho)
+		b1 <- -rho / (1 - rho) / (1 + (rep.no-1) * rho)
 		c0 <- (rep.no - 1) * (rep.no - 2) * b1^2 + 2 * (rep.no - 1) * b0 * b1
 		c1 <- ((rep.no - 1) * (rep.no - 2) + 1) * b1^2 + 2 * (rep.no - 2) * b0 * b1 + b0^2
 		sum(rep.no * (rep.no - 1) * b1) / 2 -
-				sum(y[exp.row] * (c0[exp.ind]*mask.c0 + c1[exp.ind]*mask.c1) * y[exp.col]) / 2
-
+				sum(y[exp.row] * (c0[exp.ind] * mask.c0 + c1[exp.ind] * mask.c1) * y[exp.col]) / 2
+		
+	}
+	# REML
+	f1.reml <- function(rho, y) {
+		b0 <- (1 + (rep.no-2) * rho) / (1 - rho) / (1 + (rep.no-1) * rho)
+		b1 <- -rho / (1 - rho) / (1 + (rep.no-1)*rho)
+		c0 <- (rep.no - 1) * (rep.no - 2) * b1^2 + 2 * (rep.no - 1) * b0 * b1
+		c1 <- ((rep.no - 1) * (rep.no - 2) + 1) * b1^2 + 2 * (rep.no - 2) * b0 * b1 + b0^2
+		d <- sum(rep.no * (b0 - b1) + rep.no * rep.no * b1)
+		sum(rep.no * (rep.no - 1) * b1) / 2 -  sum(rep.no * (c0 + (rep.no - 1) * c1)) / 2 / d -
+				sum(y[exp.row] * (c0[exp.ind] * mask.c0 + c1[exp.ind] * mask.c1) * y[exp.col]) / 2
 	}
 	
-	f2 <- function(y) {
+	f2 <- function(y, REML=FALSE) {
+		if (REML == FALSE) {
+			f1 <- f1.mle
+		} else {
+			f1 <- f1.reml
+		}
 		i <<- i + 1
 		if (i %% 5000 == 0 & verbose == TRUE) 	cat(i, "\n")
-	    a1 <- f1(0, y)
+		a1 <- f1(0, y)
 		if (a1 >= 0) {
 			rho <- 0
 		} else {
 			# Root finding
-			rho <- uniroot(f1, c(0, 0.9999), y, tol=1e-4)$root
+			if (class(try(rho <- uniroot(f1, c(0, 0.9999), y, tol=1e-4)$root, silent=TRUE)) == 'try-error')
+				rho <- NA	
 		}
 		rho
 	}
 	
-	if (verbose == TRUE) 	cat("Start to fit fast LMM ...\n")
+	if (verbose == TRUE) 	cat("Start to fit fast LMM using ")
+	if (REML == TRUE) {
+		cat("REML ...\n")
+	} else {
+		cat("MLE ...\n")
+	}
 	i <- 0
-	res <- apply(dat, 1, f2)
+	res <- apply(dat, 1, f2, REML)
 	
 	if (verbose == TRUE) 	cat("Complete. ", (proc.time() - ptm)[3], "seconds used.\n")
 	
